@@ -1,0 +1,267 @@
+---
+title: "Gun_Violence_Against_Women_NY(2006-2024)"
+author: "Nalini Thangavelu"
+date: "2026-09-22"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Aim of the report
+Using the dataset titled *NYPD Shooting Incident Data (Historic)* available at the **https://catalog.data.gov/dataset**, this report imports, cleans, and analyzes the data to investigate gun violence against women. 
+
+Specifically, the analysis aims to answer the following question
+
+- Do the shootings involving women occur in different locations (e.g. inside dwellings vs. open streets) or at different hours compared to male victims?
+
+Each record in the dataset represents a shooting incident in New York City from 2006 to 2024. The data includes details about the event, its location and the time of occurrence, alongside demographic information for both suspects and victims.
+
+
+## Required Packages
+Please install the below list of packages that are used in this analysis.
+```{r Include the packages, echo=TRUE}
+library(tidyverse)
+```
+
+## Import the Data
+Import the data from the source url.
+```{r Import the data, echo=TRUE}
+url <- 'https://data.cityofnewyork.us/api/v3/views/833y-fsy8/export.csv?accessType=DOWNLOAD'
+nypd_shooting_data <- read.csv(url)
+```
+
+## View the Data
+Look at how the data is currently to know what needs to be done to clean and transform it for visualization and analysis.
+```{r View the data, echo=TRUE}
+dplyr::glimpse(nypd_shooting_data)
+
+summary(nypd_shooting_data)
+```
+
+## Tidy the Data
+With the included tidyverse package functions, clean and transform the data. From the imported nypd_shooting_data dataframe
+
+1. Remove the unwanted columns for our analysis like X_COORD_CD, Y_COORD_CD, Latitude, Longitude, Lon_lat
+2. Convert the OCCUR_DATE and OCCUR_TIME columns from char data type to date and period to query based on date and time
+3. Rename the LOC_CLASSFCTN_DESC to LOCATION as that is the location related column we will be primarily using for the analysis
+4. Convert both the empty strings and "(null)" text values in the LOCATION to NA values
+5. Lets not consider the rows with missing data for LOCATION for our analysis. So lets filter them out.
+6. Similarly lets filter out the rows with VIC_SEX as "U" (unknown)
+7. For our analysis on time of violence, lets create a new data frame with field OCCUR_HOUR to group the OCCUR_TIME by the hour of occurrence
+
+### Clean the Data
+```{r Clean the data,echo=TRUE}
+# Remove the fields with co-ordinate info and convert the date/time to correct data type
+nypd_shooting_data <- nypd_shooting_data |>
+  # Remove the fields we will not be using in this analysis
+  dplyr::select(-c(LOCATION_DESC:PERP_RACE, X_COORD_CD:Lon_Lat)) |>
+  # Convert the date/time fields from chr datatype to date and period datatypes
+  dplyr::mutate(
+    OCCUR_DATE = lubridate::mdy(OCCUR_DATE), OCCUR_TIME = lubridate::hms(OCCUR_TIME)
+    ) |>
+  # Rename the LOC_CLASSFCTN_DESC field to LOCATION
+  dplyr::rename(LOCATION = LOC_CLASSFCTN_DESC )
+
+
+# There are two null values - "", "(null)" for the renamed field LOCATION.
+unique(nypd_shooting_data$LOCATION)
+
+# Convert both the null values to true R NA values for better handling
+nypd_shooting_data$LOCATION[nypd_shooting_data$LOCATION=="(null)" | 
+                            nypd_shooting_data$LOCATION=="" ] <- NA
+unique(nypd_shooting_data$LOCATION)
+```
+### Transform the Data
+```{r Transform the data, include=TRUE, echo=TRUE, results='hide'}
+# Create a new data frame by filtering out the rows with NA values for LOCATION  
+# and "U" for VIC_SEX. Also add new field for analyzing based on the hour of 
+# occurrence
+nypd_loc_and_time_data <- nypd_shooting_data |>
+  dplyr::filter(!is.na(LOCATION), VIC_SEX != "U") |>
+  dplyr::mutate(OCCUR_HOUR = hour(OCCUR_TIME)) |>
+  dplyr::mutate(OCCUR_YEAR = year(OCCUR_DATE)) |>
+  dplyr::select(c(VIC_SEX, BORO, LOCATION, OCCUR_HOUR, everything()))
+
+glimpse(nypd_loc_and_time_data)
+
+# Compare the male-to-female ratio of the filtered dataset against the original 
+# dataset to make sure the demographic distribution is not disturbed with filtering
+full_dataset_proportions <- nypd_shooting_data |>
+  filter(VIC_SEX %in% c("M", "F")) |>
+  count(VIC_SEX) |>
+  mutate(
+    Percentage = (n / sum(n)) * 100,
+    Dataset = "Full Dataset"
+)
+
+filtered_dataset_proportions <- nypd_loc_and_time_data |>
+  filter(VIC_SEX %in% c("M", "F")) |>
+  count(VIC_SEX) |>
+  mutate(
+    Percentage = (n / sum(n)) * 100,
+    Dataset = "Filtered Dataset"
+)
+proportion_comparison <- bind_rows(
+  full_dataset_proportions, 
+  filtered_dataset_proportions) |>
+  select(Dataset, VIC_SEX, Count = n, Percentage)
+print(proportion_comparison)
+
+```
+
+## Visualize and Analyze the Data
+Now with the transformed data, try to visualize with stacked bar charts to see how the location and hour of incidents compare between female and male victims
+
+```{r visualise n analyse the location by sex data, echo=TRUE}
+# Lets plot a Stacked Bar Chart to visualize the Location and Victim Sex data
+ggplot2::ggplot(nypd_loc_and_time_data, aes(x = VIC_SEX, fill = LOCATION)) +
+  geom_bar(position = "fill") +
+  scale_y_continuous(labels = scales::percent) +  # Changes y-axis to %
+  labs(
+    title = "Proportion of Locations by Victim Sex",
+    x = "Victim Sex",
+    y = "Percentage",
+    fill = "Location Type"
+    ) +
+  theme_minimal() + 
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.x = element_text(angle = 0, vjust = 0.5)
+    )
+
+```
+
+
+From the above chart, we can see that the proportion of gun violence inside the dwellings is higher for female victims compared to male victims. If data were available regarding whether the perpetrator was a known person (such as a family member) or a stranger, we would be able to further analyze this trend. Additionally, the number of incidents in transit is proportionately higher for female victims, suggesting a greater vulnerability in public transportation spaces.
+
+```{r visualise n analyse the hour of occurrence by sex data, echo=TRUE}
+# Lets plot a Stacked Bar Chart to visualize the Time and Victim Sex data
+ggplot(nypd_loc_and_time_data, aes(x = factor(OCCUR_HOUR), fill = VIC_SEX)) +
+  geom_bar(position = "stack", color = "white", linewidth = 0.2) +
+  scale_fill_brewer(palette = "Set2") + # Change to professional color palette
+  labs(
+    title = "Incidents by Hour of Occurrence and Victim Sex",
+    x = "Hour of Day (24-Hour Clock)",
+    y = "Count of Incidents",
+    fill = "Victim Sex"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    axis.text.x = element_text(angle = 0, vjust = 0.5)
+    )
+
+```
+
+
+From the above chart, we don't see a marked difference in the proportion of incidents between male and female victims with regard to the hour of occurrence. The number of incidents seems to increase after daylight hours in line with the general expectation.
+Transforming the data by grouping the hour of occurrence into distinct categories (like Late night, Morning, Afternoon, Evening) would make these trends more evident. However, we see a considerable number of incidents against female victims around 8 a.m. and 4 p.m. This could correspond to peak commuting hours. If we were to further analyze the locations of violence during these specific periods, we could determine whether these incidents correspond to those in transit.
+
+
+## Model the Data
+Let us see how we can model the data to make predictions about the probability of the victim being a female based on the location, borough and hour of occurrence. Since we are making predictions as to whether the victim is going to be Female or not, we will go with Generalized Linear Model function with family as binomial.
+
+This is going to involve some more transformations to the data.
+
+ - First we need to make sure that all the variables/fields used in the formula for prediction is either a numeric vector or factor.
+ - As our target is female victim, create a new field VIC_SEX_NUM to override R setting of alphabetical first as the baseline otherwise  
+
+```{r model the data, echo=TRUE}
+# Convert the fields used in formula to be either numeric vector or factor
+model_data <- nypd_loc_and_time_data |>
+  mutate(
+    # 1 if Female, 0 if Male
+    VIC_SEX_NUM = ifelse(VIC_SEX == "F", 1, 0),
+    BORO = as.factor(BORO),
+    LOCATION = as.factor(LOCATION),
+    # Treat hour as categorical to capture non-linear time of day effects
+    OCCUR_HOUR = as.factor(OCCUR_HOUR)
+)
+
+# Run the model
+nypd_model <- glm(
+  VIC_SEX_NUM ~ LOCATION + BORO + OCCUR_HOUR,
+  data = model_data,
+  family = binomial)
+
+summary(nypd_model)
+
+# Predict probabilities (values between 0 and 1) with type set to response
+model_data$PRED_PROB <- predict(nypd_model, type = "response")
+
+# Create the comparison data for visualization of the model
+comparison_data <- model_data |>
+  # Group by location, then borough
+  group_by(LOCATION, BORO) |>
+  summarize(
+    incident_count = n(),
+    actual_pct_female = mean(VIC_SEX_NUM), # Average of 1s and 0s is the true proportion
+    predicted_pct_female = mean(PRED_PROB), # Average model prediction for this group
+    .groups = 'drop'
+  ) |>
+  # To eliminate the small sample variance noise, filter out the records 
+  # with < 5 incident counts
+  filter(incident_count >= 5) |>
+  mutate(
+    # Calculate the raw residual
+    residual = actual_pct_female - predicted_pct_female,
+    
+    # Calculate absolute error for easy sorting of biggest misses
+    abs_err = abs(residual)
+  ) |>
+  # Sort by the largest absolute mistake first
+  arrange(desc(abs_err))
+
+# Lets see the top 10 biggest misses and catches
+head(comparison_data, 10)
+tail(comparison_data, 10)
+
+# Lets visualize the model evaluation with a scatter plot
+ggplot(comparison_data, aes(x = predicted_pct_female, y = actual_pct_female)) +
+# Prediction Reference line: Points on this line mean model prediction matches 
+# the actual perfectly
+  geom_abline(intercept = 0, slope = 1, color = "red", linetype = "dashed", linewidth = 1) +
+  # Plot the data points, sizing them by total incident count to show volume
+  geom_point(aes(size = incident_count, color = BORO), alpha = 0.7) +
+  # Format the scales
+  scale_x_continuous(
+    labels = scales::percent, limits = c(0, max(comparison_data$actual_pct_female) + 0.05)) +
+  scale_y_continuous(
+    labels = scales::percent, limits = c(0, max(comparison_data$actual_pct_female) + 0.05)) +
+  labs(
+    title = "Model Evaluation: Predicted vs. Actual Female Victim Rates",
+    subtitle = "Aggregated by Location and Borough (Groups with >= 5 incidents)",
+    x = "Model-Predicted Probability of Female Victim",
+    y = "Actual Historical Proportion of Female Victims",
+    size = "Total Shootings",
+    color = "Borough"
+    ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(face = "bold", size = 14),
+    legend.position = "right"
+    )
+
+```
+
+
+From the above scatter plot, we can see larger dots sitting directly on the prediction line around 10%. This means that for highest-volume space-and-location combinations (the big dots), the historical reality matches the model's predictions.
+
+# Conclusion
+Overall, gun violence in New York City is heavily male-dominated across most hours and public locations. However, a closer look reveals two major exceptions: the proportion of shootings occurring inside homes (dwellings) and in transit systems is noticeably higher for female victims compared to male victims.
+
+As a woman, choosing to analyze "Gun Violence Against Women" inherently brings a personal investment to the topic. To mitigate potential bias and ensure statistical objectivity, this study evaluated both male and female victims side-by-side across all times and locations. Furthermore, records with unknown entries ("U") for victim sex were excluded to make sure missing data did not skew or distort the final results.
+
+A major constraint of this study is that approximately 80% of the records lacked data for the specific location classification field (LOC_CLASSFCTN_DESC), primarily because the NYPD only began systematically recording this granular metric in recent years. While filtering out these records introduces an unavoidable selection bias, a demographic validation confirms that this selection bias did not skew the victim profile. Female victims account for 9.72% of the total historical data and remain remarkably consistent at 11.79% within the location-classified subset. This minimal variance demonstrates that the filtered subset remains highly representative of the broader dataset's victim demographics, rendering the observed trends a reliable indicator of how location dynamics differ between male and female victims. 
+
+### AI Usage Statement
+The Gemini 3.5 model developed by Google was utilized to brainstorm the visualization and statistical modeling options, ultimately guiding the selection of the included Stacked Bar Chart and Binomial GLM.
+
+### Session Info
+```{r Session_info, echo=FALSE}
+sessionInfo()
+```

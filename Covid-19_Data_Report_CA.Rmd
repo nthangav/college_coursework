@@ -1,0 +1,330 @@
+---
+title: "COVID-19_Data_Report_CA(2020-2023) "
+author: "Nalini Thangavelu"
+date: "2026-10-01"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Aim of the Report
+This report imports, tidies and analyzes the COVID-19 data set from the *John Hopkins GitHub* site to evaluate and compare monthly infection trends across five selected California counties (Alameda, Santa Clara, Santa Cruz, Los Angeles, and San Francisco) from January 2020 to March 2023.
+
+Source URLs:
+'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_confirmed_US.csv'
+'https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_deaths_US.csv'
+
+The above dataset provides information on the confirmed cases and deaths, reported at the county level for US from January 2020 to March 2023. All data was read in from the daily case report.
+
+## Required Packages
+Please install the below list of packages that are used in this analysis.
+```{r Include the packages, echo=TRUE}
+library(tidyverse)
+# Required to clean_names of the data frame
+library(janitor)
+```
+
+## Import the data
+Import the raw data from the source url
+```{r Import the data, echo=TRUE}
+main_url <- paste0(
+  "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/",
+  "master/csse_covid_19_data/csse_covid_19_time_series/"
+  )
+covid_dataset <- c("confirmed_US", "deaths_US")
+# read the data from the individual csv files and assign it to the variables 
+# named from covid_dataset vector
+for (i in 1:length(covid_dataset)){
+file_url <- paste(main_url,"time_series_covid19_",covid_dataset[i],".csv",sep="")
+assign(covid_dataset[i],read.csv(file_url))
+}
+print(paste("Data read from CSV files are in: ", toString(covid_dataset)))
+```
+
+
+## Tidy the data
+Clean and transform the data using the functions from the package tidyverse. 
+
+For each of the US data frame imported from the corresponding csv file, try to
+
+1. Convert all the columns corresponding to the observed dates as rows using pivot_longer function.
+2. Remove the columns that we are not interested in for this analysis with select
+3. Change all the column names to follow snake_case for easier readability
+4. Rename *Admin2* field to *county* for better clarity
+4. Correct the date value in this character format X%m.%d.%y (e.g. value X1.22.20) to period data type
+
+### Clean the Data
+```{r Clean/Tidy the data, echo=TRUE}
+
+cases_usa <- confirmed_US |>
+  pivot_longer(
+    cols=-c("UID", "iso2", "iso3", "code3", "FIPS", "Admin2", 
+            "Province_State", "Country_Region", "Lat", "Long_",
+            "Combined_Key"),
+    names_to="date",
+    values_to="cases"
+  ) |>
+  dplyr::select(
+    cols=-c("UID", "Lat", "Long_", "iso2", "iso3", "code3", "FIPS")
+  ) |>
+  rename(county = Admin2) |>
+  janitor::clean_names()
+cases_usa$date <- as.Date(cases_usa$date,format="X%m.%d.%y")
+
+deaths_usa <- deaths_US |>
+  pivot_longer(
+    cols=-c("UID", "iso2", "iso3", "code3", "FIPS", "Admin2",
+            "Province_State", "Country_Region", "Lat", "Long_", 
+            "Combined_Key", "Population"),
+    names_to="date",
+    values_to="deaths"
+  ) |>
+  dplyr::select(
+    cols=-c("UID", "Lat", "Long_", "iso2", "iso3", "code3", "FIPS")
+  ) |>
+  rename(county = Admin2) |>
+  janitor::clean_names()
+deaths_usa$date <- as.Date(deaths_usa$date,format="X%m.%d.%y")
+```
+
+### Transform the Data
+```{r Transform the data, include=TRUE, echo=TRUE, results='hide'}
+# Combine both cases_usa and deaths_usa to create one single data frame to have 
+# the population information. 
+covid_usa <- cases_usa |>
+  full_join(deaths_usa)
+
+print(glimpse(covid_usa))
+
+# Take the covid_usa data and from that get the number of cases monthly over 
+# the data collection period for the various counties in California State
+covid_ca_monthly <- covid_usa |>
+  # filter out all the records for California State
+  filter(`province_state` == 'California') |>
+  # Group by county, then end of the month
+  group_by(county, monthly_date = ceiling_date(date, "month") - days(1)) |>
+  # Since the cases is a cumulative count, lets get the max count for the month
+  summarise(
+    cases = max(cases, na.rm = TRUE), 
+    population = max(population),
+    .groups = "drop"
+  )
+
+print(glimpse(covid_ca_monthly))
+```
+
+## Visualize and Analyze the Data
+With the transformed data, visualize the monthly trend of confirmed COVID-19 cases for these five California counties: Alameda, Santa Clara, Santa Cruz, San Francisco and Los Angeles. 
+
+```{r visualise n analyse the confirmed infected cases data, echo=TRUE}
+# Create chart_data by filtering the selected counties from the covid_ca_monthly
+chart_data <- covid_ca_monthly |>
+  # Filter for only the selected counties
+  filter(
+    county %in% c('Alameda', 'Santa Clara', 'Santa Cruz', 
+                  'San Francisco', 'Los Angeles')
+  ) |>
+  rename(date_axis = monthly_date)
+
+# Build a line chart for comparison
+ggplot(chart_data, aes(x = date_axis, y = cases, color = county, group = county)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "COVID-19 Trend Across California Counties (Cumulative counts)",
+    subtitle = paste0("Comparing Alameda, Santa Clara, Santa Cruz, Los Angeles",
+                     "and San Francisco counties"),
+    x = "Timeline",
+    y = "Cases Recorded",
+    color = "County"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Transform the data further to visualize the trend based on the new cases for the month
+covid_ca_monthly_discrete <- covid_ca_monthly |>
+  group_by(county) |>
+  arrange(monthly_date, .by_group = TRUE) |>
+  mutate(cases = cases - lag(cases, default=0))
+
+chart_data2 <- covid_ca_monthly_discrete |>
+  # Filter for only the selected counties
+  filter(
+    county %in% c('Alameda', 'Santa Clara', 'Santa Cruz', 'San Francisco',
+                  'Los Angeles')
+  ) |>
+  rename(date_axis = monthly_date)
+
+ggplot(chart_data2, aes(x = date_axis, y = cases, color = county, group = county)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "COVID-19 Trend Across California Counties",
+    subtitle = paste0(
+      "Comparing Alameda, Santa Clara, Santa Cruz,",
+      "Los Angeles and San Francisco counties"
+    ),
+    x = "Timeline",
+    y = "New Cases Recorded",
+    color = "County"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Tie in the population info to visualize the trend of new cases per thousand
+covid_ca_per_thousand <- covid_ca_monthly_discrete |>
+  mutate(cases_per_thousand = cases * 1000 / population )
+
+chart_data3 <- covid_ca_per_thousand |>
+  # Filter for only the selected counties
+  filter(
+    county %in% c('Alameda', 'Santa Clara', 'Santa Cruz', 'San Francisco',
+                  'Los Angeles')
+  ) |>
+  rename(date_axis = monthly_date)
+
+ggplot(chart_data3, aes(x = date_axis, y = cases_per_thousand, color = county, group = county)) +
+  geom_line(linewidth = 1) +
+  geom_point(size = 1.5) +
+  scale_x_date(date_breaks = "3 months", date_labels = "%b %Y") +
+  scale_y_continuous(labels = scales::comma) +
+  labs(
+    title = "COVID-19 Trend Across California Counties",
+    subtitle = paste0(
+      "Comparing Alameda, Santa Clara, Santa Cruz,",
+      "Los Angeles and San Francisco counties"
+    ),
+    x = "Timeline",
+    y = "New Cases Per Thousand Recorded",
+    color = "County"
+  ) +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+```
+
+From the above charts, we can see that number of confirmed COVID-19 cases has peaked in the selected California counties around the winters of 2020 and 2021. These correctly correspond to the Winter 2020–2021 surge and the Winter 2021–2022 Omicron surge seen in these counties. The summer surge of 2022 corresponds to a wave of infections driven by the highly transmissible omicron subvariant BA.5.
+
+## Model the Data
+Let us see how we can model this data to predict the number of new cases based on the county, population and monthly_date. Since we are making predictions on the new infections monthly, we will go with Generalized Linear Model with log link function and log(population) offset to account for the varying county sizes. Initial testing under a standard Poisson family revealed extreme over-dispersion, meaning the variance vastly exceeded the mean due to the clustered, wave-like nature of epidemic spikes. To resolve this violation of assumptions, had to transition to a Quasi-Poisson GLM. This model dynamically estimated a realistic dispersion parameter of 10973.99, widening our standard errors to true historical scales and ensuring our p-values and subsequent prediction boundaries are statistically valid.
+
+```{r model the data, echo=TRUE}
+# Let's try to model this data to predict the number of new cases based on 
+# the county, population and monthly_date.
+model_data <- covid_ca_monthly_discrete |>
+    filter(
+      county %in% c('Alameda', 'Santa Clara', 'Santa Cruz', 'San Francisco',
+                    'Los Angeles')
+    ) |>
+    mutate(
+    year = as.factor(year(monthly_date)),
+    month = as.factor(month(monthly_date)),
+    # To account for the huge difference in the sizes of counties as seen with 
+    # Santa Cruz to Los Angeles use log(population), force the model to look at
+    # the per capita infection rate instead of just raw case counts
+    log_pop = log(population) # Pre-calculating log of population for the offset
+    )
+
+# In the Johns Hopkins COVID-19 GitHub repository, cumulative total_cases 
+# sometimes underwent retroactive data corrections by local health departments. 
+# When a county over-reported cases one week and corrected it the next, 
+# calculating monthly new_cases (subtracting one month's total from the next) 
+# can result in a negative number. Let's make sure we don't have these negative
+# counts for our selected counties.
+model_data |> filter(cases < 0) |> dplyr:::select(county, month, year, cases)
+  
+# Initially tried with poisson model
+poisson_model <- glm(
+  cases ~ county + year + month + offset(log_pop),
+  data = model_data,
+  # Since we are looking at new cases, our counts can't be negative. A log link
+  # function keeps the model mathematically grounded by ensuring all predicted 
+  # values are strictly greater than or equal to zero
+  family = poisson(link = "log")
+)
+
+summary(poisson_model)
+# Calculate the dispersion ratio
+chi_sq <- sum(residuals(poisson_model, type = "pearson")^2)
+deg_freedom <- poisson_model$df.residual
+dispersion_ratio <- chi_sq / deg_freedom
+print(paste("Dispersion Ratio: ", dispersion_ratio))
+# A standard Poisson model assumes that the variance in our data is exactly 
+# equal to the average case count. However, a pandemic does not spread evenly or
+# randomly; it moves in massive, unpredictable waves. This causes overdispersion
+# (dispersion ratio ~ 11000), meaning the actual swings in data are thousands of
+# times larger than what a standard Poisson model expects.
+
+# So let's switch to the Quasi-Poisson family for our model
+quasi_poisson_model <- glm(
+  cases ~ county + year + month + offset(log_pop),
+  data = model_data,
+  family = quasipoisson(link = "log")
+)
+
+summary(quasi_poisson_model)
+# Note the dispersion parameter of 10973.99 in above output, which indicates our
+# data's swings to be roughly 11,000 times larger than a Poisson baseline. 
+# Quasi-poisson family uses this number to widen the error margins, thereby
+# making the final p-values realistic
+
+eval_data <- model_data |>
+  ungroup() |>
+  mutate(predicted_cases = predict(quasi_poisson_model, type = "response"))
+
+plot_data <- eval_data |> 
+  dplyr::select(county, year, month, cases, predicted_cases) |>
+  # Combine year and month into a single date string for sequential
+  # timeline plotting 
+  mutate(timeline = as.Date(paste(year, month, "01", sep = "-"), format = "%Y-%m-%d")) |>
+  pivot_longer( 
+    cols = c(cases, predicted_cases), 
+    names_to = "Data_Type", 
+    values_to = "Count" 
+  ) |>
+  mutate(
+    Data_Type = recode(Data_Type,
+                       "cases" = "Actual Cases", 
+                       "predicted_cases" = "Model Predicted")
+  )
+
+ggplot(plot_data, aes(x = timeline, y = Count, color = Data_Type, group = Data_Type)) +
+  geom_line(linewidth = 1) +
+  geom_point(alpha = 0.5) +
+  # Use facet_wrap to allow each county to scale to its own population size
+  facet_wrap(~ county, scales = "free_y") +
+  labs(
+    title = "COVID-19 Model Evaluation: Actual vs. Predicted Cases",
+    subtitle = "Negative Binomial GLM with Population Offset",
+    x = "Timeline (Month/Year)",
+    y = "Monthly Case Count",
+    color = "Legend"
+  ) +
+  theme_minimal() +
+  scale_color_manual(values = c("Actual Cases" = "#2c3e50", 
+                                "Model Predicted" = "#e74c3c")) +
+  theme(legend.position = "bottom", 
+        axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+
+# Conclusion
+Visualization and modeling reveal that per capita COVID-19 infection trends followed highly synchronized temporal patterns across the five analyzed California counties between January 2020 and March 2023. The data captures two dominant historical peaks: the *Winter 2020–2021* surge and the *Winter 2021–2022 Omicron* surge. Incorporating county as a fixed predictor alongside a population offset allowed a Quasi-Poisson GLM to capture regional baselines effectively, though the model slightly underestimated the magnitude of the 2021 winter surge peak. 
+
+A primary limitation of this analysis is selection bias; four of the five chosen counties reside in the San Francisco Bay Area, sharing highly correlated public health policies, regional demographics, and vaccination adoption patterns. Consequently, the model's high predictive performance may not generalize well to rural or conservative regions of California where intervention timelines differed. Furthermore, the underlying data suffers from severe reporting bias: early 2020 figures under-represent true cases due to strict PCR testing scarcity, while late 2022–2023 figures are structurally under-reported due to the widespread adoption of unrecorded at-home antigen tests.
+
+### AI Usage Statement
+The Gemini 3.5 model developed by Google was utilized to brainstorm statistical modeling options, ultimately guiding the selection of the included Quasi-Poisson GLM.
+
+### Session Info
+```{r Session_info, echo=FALSE}
+sessionInfo()
+```
